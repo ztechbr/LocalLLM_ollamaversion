@@ -110,49 +110,77 @@ def chat():
 
 
 @app.route("/rag", methods=["POST"])
+@app.route("/rag", methods=["POST"])
 def rag():
 
-    data = request.json
+    data = request.json or {}
 
     question = data.get("question", "")
 
     docs = vector_db.similarity_search(
         question,
-        k=4
+        k=10
     )
 
-    context = "\\n\\n".join([
-        doc.page_content for doc in docs
+    print("\n===== DEBUG RAG =====")
+    print("Pergunta:", question)
+    print("Total de chunks retornados:", len(docs))
+
+    for i, doc in enumerate(docs):
+        print(f"\n--- DOC {i + 1} ---")
+        print("Metadata:", doc.metadata)
+        print("Preview:")
+        print(doc.page_content[:800])
+        print("--------------------")
+
+    context = "\n\n".join([
+        f"[DOCUMENTO {i + 1}]\n"
+        f"METADATA: {doc.metadata}\n"
+        f"CONTEÚDO:\n{doc.page_content}"
+        for i, doc in enumerate(docs)
     ])
 
     rag_prompt = ChatPromptTemplate.from_messages([
         (
             "system",
             """
-Você é um assistente local de IA trabalhando em modo restrito com documentos locais.
+Você é um assistente local de IA especializado em análise de documentos locais, leis brasileiras, contratos, normas e códigos.
 
-REGRAS:
-- Use somente o contexto fornecido.
-- Não use conhecimento externo.
-- Não invente leis, artigos, normas, decisões ou códigos.
-- Se a resposta não estiver no contexto, diga:
-  "Não encontrei essa informação nos documentos locais."
-- Quando o contexto trouxer lei, contrato ou norma:
-  1. Cite apenas o que estiver no contexto
-  2. Diferencie texto, interpretação e recomendação
-  3. Aponte riscos práticos
-- Quando o contexto trouxer código:
-  1. Explique o objetivo
-  2. Explique o fluxo
-  3. Aponte erros possíveis
-  4. Sugira melhorias
+REGRAS PRINCIPAIS:
+- Use prioritariamente o CONTEXTO fornecido.
+- Não ignore trechos relevantes do contexto.
+- Não diga que não encontrou antes de analisar todos os documentos retornados.
+- Se o contexto contiver a informação, responda com base nele.
+- Se o contexto contiver apenas parte da informação, responda a parte encontrada e diga que o restante não apareceu no contexto.
+- Não invente artigos, incisos, parágrafos, jurisprudência ou fontes.
+- Não use internet.
+- Quando o contexto trouxer lei, artigo, inciso, parágrafo ou norma, cite exatamente o que estiver disponível no contexto.
+- Quando o usuário perguntar "o que diz", explique de forma clara e resumida.
+- Quando for análise jurídica, separe:
+  1. Texto encontrado
+  2. Explicação prática
+  3. Pontos de atenção
+- Quando o contexto trouxer código, explique:
+  1. Objetivo
+  2. Fluxo
+  3. Riscos
+  4. Melhorias
 - Responda em português do Brasil.
+
+REGRA DE NÃO ENCONTRADO:
+Use a frase "Não encontrei essa informação nos documentos locais." somente se nenhum trecho do CONTEXTO tiver relação direta com a pergunta.
 
 CONTEXTO:
 {context}
 """
         ),
-        ("human", "{question}")
+        (
+            "human",
+            """
+Pergunta do usuário:
+{question}
+"""
+        )
     ])
 
     chain = rag_prompt | llm
@@ -162,9 +190,21 @@ CONTEXTO:
         "question": question
     })
 
+    sources = [
+        {
+            "index": i + 1,
+            "metadata": doc.metadata,
+            "preview": doc.page_content[:300]
+        }
+        for i, doc in enumerate(docs)
+    ]
+
     return jsonify({
-        "answer": response.content
+        "mode": "local_documents_only",
+        "answer": response.content,
+        "sources": sources
     })
+
 
 @app.route("/reindex", methods=["POST"])
 def reindex():
@@ -172,7 +212,6 @@ def reindex():
     global vector_db
 
     try:
-
         if os.path.exists("./rag_store"):
             shutil.rmtree("./rag_store")
 
@@ -202,17 +241,19 @@ def reindex():
 
         return jsonify({
             "success": True,
-            "message": "Documentos reindexados com sucesso.",
+            "message": "Documentos reindexados e FAISS recarregado em memória.",
             "stdout": result.stdout,
             "stderr": result.stderr
         })
 
     except Exception as e:
-
         return jsonify({
             "success": False,
             "error": str(e)
         }), 500
+
+
+
 
 
 if __name__ == "__main__":
